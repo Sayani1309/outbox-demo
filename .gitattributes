@@ -6,3 +6,4 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 Dockerfile text eol=lf
+.editorconfig text eol=lf
