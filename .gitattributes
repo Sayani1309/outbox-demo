@@ -1,0 +1,8 @@
+# Shell scripts must always use LF, even on Windows — required for them
+# to run correctly inside Linux Docker containers.
+*.sh text eol=lf
+
+# Keep these consistent too, since this project runs in Docker on any OS.
+*.yml text eol=lf
+*.yaml text eol=lf
+Dockerfile text eol=lf
