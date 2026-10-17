@@ -1,3 +1,4 @@
+import uuid
 import asyncio
 from sqlalchemy import select, text
 
@@ -26,6 +27,7 @@ async def test_successful_dual_write():
                 customer_email="alice@example.com",
                 item="Mechanical Keyboard",
                 amount_cents=8999,
+                idempotency_key=uuid.uuid4(),
             )
             session.add(order)
             await session.flush()
@@ -62,6 +64,8 @@ async def test_failed_dual_write():
                     customer_email="bob@example.com",
                     item="Mouse",
                     amount_cents=2999,
+                    idempotency_key=uuid.uuid4(),
+
                 )
                 session.add(order)
                 await session.flush()
