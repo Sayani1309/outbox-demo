@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     postgres_port: int = 5432
     postgres_host: str = "localhost"
 
+    redis_password: str
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property
@@ -21,6 +25,10 @@ class Settings(BaseSettings):
             port=self.postgres_port,
             database=self.postgres_db.strip(),
         )
+
+    @property
+    def redis_url(self) -> str:
+        return f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}/0"
 
 
 settings = Settings()
