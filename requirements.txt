@@ -2,3 +2,5 @@ sqlalchemy[asyncio]>=2.0
 asyncpg
 pydantic-settings
 python-dotenv
+fastapi
+uvicorn[standard]
