@@ -12,3 +12,7 @@ class Base(DeclarativeBase):
     """Every table model inherits from this; SQLAlchemy uses it to
     track table metadata for create_all() and migrations."""
     pass
+
+async def get_session():
+    async with async_session() as session:
+        yield session
