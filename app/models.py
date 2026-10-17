@@ -18,9 +18,13 @@ class Order(Base):
     customer_email: Mapped[str] = mapped_column(String)
     item: Mapped[str] = mapped_column(String)
     amount_cents: Mapped[int] = mapped_column(Integer)
+    idempotency_key: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), unique=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
+    notes: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class OutboxStatus(str, enum.Enum):
