@@ -87,7 +87,10 @@ async def handle_event(fields: dict) -> None:
 
 
 async def run_consumer():
-    redis_client = redis.from_url(settings.redis_url, decode_responses=True)
+    redis_client = redis.from_url( settings.redis_url,
+        decode_responses=True,
+        socket_timeout=BLOCK_MS / 1000 + 5,  
+        socket_connect_timeout=5,)
     await ensure_group_exists(redis_client)
     logger.info(f"Consumer '{CONSUMER_NAME}' started, listening on '{STREAM_NAME}'...")
 
