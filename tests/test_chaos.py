@@ -1,3 +1,4 @@
+from app.models import ProcessedEvent
 import uuid
 import json
 from app.models import OutboxStatus
@@ -6,6 +7,95 @@ from sqlalchemy import select
 
 from app.models import Order, OutboxEvent
 
+from consumer.worker import ensure_group_exists, handle_event, STREAM_NAME, GROUP_NAME
+
+
+async def test_consumer_crash_before_ack_leaves_entry_pending_for_redelivery(
+    db_session, redis_client
+):
+    """
+    Simulates: the consumer reads an event, processes it, but crashes
+    before calling XACK. Proves the entry stays in the group's pending
+    list (not lost), and that a restarted consumer can claim and finish
+    it — without reprocessing business logic twice, since our idempotency
+    guard already recorded it.
+    """
+    order = Order(
+        customer_email="ack-crash-test@example.com",
+        item="Widget",
+        amount_cents=1500,
+        idempotency_key=uuid.uuid4(),
+    )
+    db_session.add(order)
+    await db_session.flush()
+
+    outbox = OutboxEvent(
+        aggregate_type="order",
+        aggregate_id=str(order.id),
+        event_type="order.created",
+        payload={"order_id": str(order.id)},
+    )
+    db_session.add(outbox)
+    await db_session.commit()
+
+    await ensure_group_exists(redis_client)
+
+    # Publish directly to the stream (bypassing the poller, since we're
+    # testing the consumer in isolation here).
+    entry_id = await redis_client.xadd(
+        STREAM_NAME,
+        {
+            "event_id": str(outbox.id),
+            "event_type": outbox.event_type,
+            "aggregate_type": outbox.aggregate_type,
+            "aggregate_id": outbox.aggregate_id,
+            "payload": json.dumps(outbox.payload),
+        },
+    )
+
+    # --- Simulate the consumer reading the entry (XREADGROUP) ---
+    response = await redis_client.xreadgroup(
+        groupname=GROUP_NAME,
+        consumername="worker-test",
+        streams={STREAM_NAME: ">"},
+        count=1,
+    )
+    assert response, "Expected the consumer group to deliver the new entry"
+    _, entries = response[0]
+    delivered_id, fields = entries[0]
+    assert delivered_id == entry_id
+
+    # --- Simulate processing succeeding, but crashing BEFORE xack ---
+    await handle_event(fields)
+    # Deliberately no xack call here — this is the crash point.
+
+    # Prove the entry is still pending (not lost) for this consumer.
+    pending = await redis_client.xpending_range(
+        STREAM_NAME, GROUP_NAME, min="-", max="+", count=10
+    )
+    pending_ids = [p["message_id"] for p in pending]
+    assert entry_id in pending_ids, (
+        "Expected the unacked entry to still be in the pending list, "
+        "proving it would be recoverable after a real crash, not lost."
+    )
+
+    # --- Simulate a restarted/second consumer claiming and finishing it ---
+    claimed = await redis_client.xclaim(
+        STREAM_NAME, GROUP_NAME, "worker-test-restarted", min_idle_time=0, message_ids=[entry_id]
+    )
+    assert len(claimed) == 1
+
+    claimed_id, claimed_fields = claimed[0]
+    await handle_event(claimed_fields)  # should skip — already in processed_events
+    await redis_client.xack(STREAM_NAME, GROUP_NAME, claimed_id)
+
+    # Prove it was only ever recorded as processed ONCE, despite being
+    # delivered twice (original + reclaimed).
+    result = await db_session.execute(
+        select(ProcessedEvent).where(ProcessedEvent.event_id == outbox.id)
+    )
+    processed_rows = result.scalars().all()
+    assert len(processed_rows) == 1
 
 async def test_dual_write_is_atomic_on_success(db_session):
     """A successful order creation writes BOTH the order and its outbox
