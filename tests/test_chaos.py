@@ -1,3 +1,4 @@
+import asyncio
 from app.models import ProcessedEvent
 import uuid
 import json
@@ -9,6 +10,85 @@ from app.models import Order, OutboxEvent
 
 from consumer.worker import ensure_group_exists, handle_event, STREAM_NAME, GROUP_NAME
 
+from httpx import AsyncClient, ASGITransport
+from app.main import app
+
+
+async def test_duplicate_request_with_same_idempotency_key_creates_only_one_order(
+    db_session,
+):
+    """
+    Simulates a client retrying a request (e.g. due to a network timeout)
+    with the same idempotency_key. Proves the second request returns the
+    SAME order rather than creating a duplicate.
+    """
+    key = str(uuid.uuid4())
+    payload = {
+        "customer_email": "retry-test@example.com",
+        "item": "Headphones",
+        "amount_cents": 5999,
+        "idempotency_key": key,
+    }
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response_1 = await client.post("/orders", json=payload)
+        response_2 = await client.post("/orders", json=payload)
+
+    assert response_1.status_code == 201
+    assert response_2.status_code == 201
+
+    order_id_1 = response_1.json()["id"]
+    order_id_2 = response_2.json()["id"]
+
+    assert order_id_1 == order_id_2, (
+        "Expected the retried request to return the SAME order id, "
+        "not create a duplicate."
+    )
+
+    result = await db_session.execute(
+        select(Order).where(Order.idempotency_key == uuid.UUID(key))
+    )
+    matching_orders = result.scalars().all()
+    assert len(matching_orders) == 1, (
+        "Expected exactly one order in the database despite two identical "
+        "requests."
+    )
+
+
+async def test_concurrent_duplicate_requests_still_create_only_one_order(db_session):
+    """
+    A harder version of the above: fires both requests at nearly the same
+    time, specifically to exercise the IntegrityError race-condition
+    handling in the endpoint, not just the simple SELECT-first check.
+    """
+    key = str(uuid.uuid4())
+    payload = {
+        "customer_email": "race-test@example.com",
+        "item": "Monitor",
+        "amount_cents": 24999,
+        "idempotency_key": key,
+    }
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        results = await asyncio.gather(
+            client.post("/orders", json=payload),
+            client.post("/orders", json=payload),
+        )
+
+    assert all(r.status_code == 201 for r in results)
+
+    order_ids = {r.json()["id"] for r in results}
+    assert len(order_ids) == 1, (
+        "Expected both concurrent requests to resolve to the SAME order id."
+    )
+
+    result = await db_session.execute(
+        select(Order).where(Order.idempotency_key == uuid.UUID(key))
+    )
+    matching_orders = result.scalars().all()
+    assert len(matching_orders) == 1
 
 async def test_consumer_crash_before_ack_leaves_entry_pending_for_redelivery(
     db_session, redis_client
