@@ -33,6 +33,61 @@ services:
       timeout: 5s
       retries: 5
 
+  migrate:
+    build: .
+    container_name: outbox-migrate
+    command: ["alembic", "upgrade", "head"]
+    environment: &app-env
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: .
+    container_name: outbox-api
+    restart: unless-stopped
+    environment: *app-env
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  poller:
+    build: .
+    container_name: outbox-poller
+    restart: unless-stopped
+    command: ["python", "-m", "relay.poller"]
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  consumer:
+    build: .
+    container_name: outbox-consumer
+    restart: unless-stopped
+    command: ["python", "-m", "consumer.worker"]
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
 volumes:
   pgdata:
   redisdata:
